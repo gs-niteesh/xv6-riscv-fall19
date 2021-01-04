@@ -5,6 +5,8 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h"
+#include "proc.h"
 
 /*
  * the kernel's page table.
@@ -103,18 +105,40 @@ walkaddr(pagetable_t pagetable, uint64 va)
 {
   pte_t *pte;
   uint64 pa;
+  int invalid_page = 0;
 
   if(va >= MAXVA)
     return 0;
 
   pte = walk(pagetable, va, 0);
-  if(pte == 0)
-    return 0;
-  if((*pte & PTE_V) == 0)
-    return 0;
-  if((*pte & PTE_U) == 0)
-    return 0;
-  pa = PTE2PA(*pte);
+  // printf("\tpte != 0 %p %p %p\n", pte, *pte, va);
+  if(pte == 0) {
+    invalid_page = 1;
+  } else {
+    if((*pte & PTE_V) == 0)
+      invalid_page = 1;
+    if((*pte & PTE_U) == 0)
+      invalid_page = 1;
+  }
+  if (!invalid_page)
+    pa = PTE2PA(*pte);
+  else {
+    // printf("pte == 0 %p %p\n", pte, va);
+    if (va >= myproc()->sz) return 0;
+    va = PGROUNDDOWN(va);
+    char *mem = kalloc();
+    if (mem == 0) {
+      printf("walkaddr: kalloc failed\n");
+      return 0;
+    }
+    memset(mem, 0, PGSIZE);
+    if (mappages(pagetable, va, PGSIZE, (uint64)mem, PTE_W | PTE_X | PTE_R | PTE_U) != 0) {
+      kfree(mem);
+      printf("walkaddr: mappages failed\n");
+      return 0;
+    }
+    pa = (uint64) mem;
+  }
   return pa;
 }
 
@@ -163,8 +187,10 @@ mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
   for(;;){
     if((pte = walk(pagetable, a, 1)) == 0)
       return -1;
-    if(*pte & PTE_V)
-      panic("remap");
+    if(*pte & PTE_V) {
+      if (*pte & PTE_U) panic("remap");
+      else return -1;
+    }
     *pte = PA2PTE(pa) | perm | PTE_V;
     if(a == last)
       break;
@@ -172,6 +198,35 @@ mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
     pa += PGSIZE;
   }
   return 0;
+}
+
+static void
+print_pte(pagetable_t pagetable, int level)
+{
+  for (int i = 0; i < 512; i++)
+  {
+    pte_t *pte = &pagetable[i];
+
+    if ((*pte & PTE_V) == 0)
+      continue;
+
+    for (int i = 0; i < level; i++)
+      printf(" ..");
+
+    uint64 pa = PTE2PA(*pte);
+    printf("%d: pte %p pa %p\n", i, *pte, pa);
+
+    if (level != 3)
+      print_pte((pagetable_t) pa, level + 1);
+  }
+}
+
+void
+vmprint(pagetable_t pagetable)
+{
+  printf("page table %p\n", pagetable);
+
+  print_pte(pagetable, 1);
 }
 
 // Remove mappings from a page table. The mappings in
@@ -187,19 +242,22 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 size, int do_free)
   a = PGROUNDDOWN(va);
   last = PGROUNDDOWN(va + size - 1);
   for(;;){
-    if((pte = walk(pagetable, a, 0)) == 0)
-      panic("uvmunmap: walk");
-    if((*pte & PTE_V) == 0){
-      printf("va=%p pte=%p\n", a, *pte);
-      panic("uvmunmap: not mapped");
+    if((pte = walk(pagetable, a, 0)) == 0) {
+      // Ignore unmapped page
+    } else{
+      if ((*pte & PTE_V) == 0){
+        // Ignore unmapped page
+        // panic("uvmunmap: not mapped");
+      }
+      if (PTE_FLAGS(*pte) == PTE_V)
+        panic("uvmunmap: not a leaf");
+      if (((*pte & PTE_V) != 0) && do_free)
+      {
+        pa = PTE2PA(*pte);
+        kfree((void *)pa);
+      }
+      *pte = 0;
     }
-    if(PTE_FLAGS(*pte) == PTE_V)
-      panic("uvmunmap: not a leaf");
-    if(do_free){
-      pa = PTE2PA(*pte);
-      kfree((void*)pa);
-    }
-    *pte = 0;
     if(a == last)
       break;
     a += PGSIZE;
@@ -326,9 +384,11 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
-      panic("uvmcopy: pte should exist");
+      continue;
+      // panic("uvmcopy: pte should exist");
     if((*pte & PTE_V) == 0)
-      panic("uvmcopy: page not present");
+      continue;
+      // panic("uvmcopy: page not present");
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
     if((mem = kalloc()) == 0)

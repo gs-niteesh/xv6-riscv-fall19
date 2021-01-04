@@ -681,3 +681,30 @@ procdump(void)
     printf("\n");
   }
 }
+
+int
+handle_page_fault(struct proc *p, uint64 addr)
+{
+  if (addr >= p->sz) return -1;
+
+  addr = PGROUNDDOWN(addr);
+
+  char *mem = kalloc();
+  if (mem == 0)
+  {
+    printf("page fault: kalloc failed during lazy allocation\n");
+    return -1;
+  }
+  else
+  {
+    memset(mem, 0, PGSIZE);
+
+    if (mappages(p->pagetable, addr, PGSIZE, (uint64)mem, PTE_W | PTE_X | PTE_R | PTE_U) != 0)
+    {
+      kfree(mem);
+      printf("page fault: mappages failed during lazy allocation\n");
+      return -1;
+    }
+  }
+  return 0;
+}

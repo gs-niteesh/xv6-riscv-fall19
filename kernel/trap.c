@@ -16,6 +16,8 @@ void kernelvec();
 
 extern int devintr();
 
+extern int handle_page_fault(struct proc *p, uint64 addr);
+
 void
 trapinit(void)
 {
@@ -67,7 +69,11 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
-  } else {
+  } else if (r_scause() == 13 || r_scause() == 15){
+    // printf("page fault: scause: %d stval: %p pid: %d\n", r_scause(), r_stval(), p->pid);
+    if (handle_page_fault(myproc(), r_stval()) != 0)
+      p->killed = 1;
+  } else{
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     p->killed = 1;

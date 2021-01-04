@@ -43,12 +43,22 @@ sys_sbrk(void)
 {
   int addr;
   int n;
+  struct proc *p;
 
   if(argint(0, &n) < 0)
     return -1;
-  addr = myproc()->sz;
-  if(growproc(n) < 0)
-    return -1;
+
+  p = myproc();
+  addr = p->sz;
+
+  if (n > 0) {
+    /* Lazy allocate */
+    /* Allocate memory only when the memory is referenced. */
+    p->sz += n;
+  } else {
+    p->sz = uvmdealloc(p->pagetable, p->sz, p->sz + n);
+  }
+
   return addr;
 }
 
