@@ -14,6 +14,8 @@ void freerange(void *pa_start, void *pa_end);
 extern char end[]; // first address after kernel.
                    // defined by kernel.ld.
 
+static uint64 start;
+
 struct run {
   struct run *next;
 };
@@ -21,13 +23,17 @@ struct run {
 struct {
   struct spinlock lock;
   struct run *freelist;
+  uint *refcounts;
 } kmem;
 
 void
 kinit()
 {
   initlock(&kmem.lock, "kmem");
-  freerange(end, (void*)PHYSTOP);
+  kmem.refcounts = (uint *) end;
+  /* Allocate size of he refcounts array */
+  uint64 ref_size = ((PHYSTOP - (uint64)end) / 4096 + 1) * sizeof(uint);
+  freerange(end + ref_size, (void*)PHYSTOP);
 }
 
 void
@@ -51,6 +57,9 @@ kfree(void *pa)
   if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
     panic("kfree");
 
+  /* Due COW pages might still be used by other process */
+  uint index = ((uint64)pa - (uint64)end) / PGSIZE;
+
   // Fill with junk to catch dangling refs.
   memset(pa, 1, PGSIZE);
 
@@ -59,6 +68,7 @@ kfree(void *pa)
   acquire(&kmem.lock);
   r->next = kmem.freelist;
   kmem.freelist = r;
+  kmem.refcounts[index] = 0;
   release(&kmem.lock);
 }
 
@@ -69,14 +79,52 @@ void *
 kalloc(void)
 {
   struct run *r;
+  uint index;
 
   acquire(&kmem.lock);
   r = kmem.freelist;
-  if(r)
+  if(r) {
     kmem.freelist = r->next;
+    index = ((uint64)r - (uint64)end) / PGSIZE;
+    kmem.refcounts[index] = 1;
+  }
   release(&kmem.lock);
 
   if(r)
     memset((char*)r, 5, PGSIZE); // fill with junk
   return (void*)r;
+}
+
+void
+kpage_ref(void *pa)
+{
+  uint index;
+
+  acquire(&kmem.lock);
+  if (pa == 0)
+    panic("kpage: pa is 0");
+
+  index = ((uint64)pa - (uint64)end) / PGSIZE;
+  kmem.refcounts[index] ++;
+  release(&kmem.lock);
+}
+
+void
+kpage_deref(void *pa)
+{
+  uint index;
+  int free = 0;
+
+  acquire(&kmem.lock);
+  if (pa == 0)
+    panic("kpage: pa is 0");
+
+  index = ((uint64)pa - (uint64)end) / PGSIZE;
+  kmem.refcounts[index] --;
+  if (kmem.refcounts[index] == 0)
+    free = 1;
+  release(&kmem.lock);
+
+  if (free)
+    kfree(pa);
 }
