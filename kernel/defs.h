@@ -181,6 +181,9 @@ uint64          plic_pending(void);
 int             plic_claim(void);
 void            plic_complete(int);
 
+// Returns the number of free pages in the system
+uint get_freepages();
+
 // virtio_disk.c
 void            virtio_disk_init(int);
 void            virtio_disk_rw(int, struct buf *, int);

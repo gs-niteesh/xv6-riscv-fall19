@@ -53,6 +53,12 @@ sys_sbrk(void)
 }
 
 uint64
+sys_get_free(void)
+{
+  return get_freepages();
+}
+
+uint64
 sys_sleep(void)
 {
   int n;
