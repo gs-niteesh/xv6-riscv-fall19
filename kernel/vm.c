@@ -393,26 +393,22 @@ uvmcowpage(pagetable_t pt, uint64 va)
 
   va = PGROUNDDOWN(va);
   pte = walk(pt, va, 0);
-  if (pte == 0 || (*pte & PTE_V) == 0){
-    /* NO PTE */
-    panic("uvmcowpage: PTE = 0");
-  }
+  if (pte == 0 || (*pte & PTE_V) == 0)
+    return 0;
 
   return *pte & PTE_COW;
 }
 
 int
-uvmcreatecowpage(struct proc *p, uint64 va)
+uvmcreatecowpage(pagetable_t pt, uint64 va)
 {
   pte_t *pte;
   char *mem;
   uint64 pa;
   uint flags;
-  pagetable_t pt;
-
-  pt = p->pagetable;
 
   va = PGROUNDDOWN(va);
+
   if ((pte = walk(pt, va, 0)) == 0)
     panic("uvmcreatecowpage: Invalid child PTE");
 
@@ -461,21 +457,35 @@ uvmclear(pagetable_t pagetable, uint64 va)
 int
 copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 {
+  pte_t *pte;
   uint64 n, va0, pa0;
 
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
-      return -1;
-    n = PGSIZE - (dstva - va0);
-    if(n > len)
-      n = len;
-    memmove((void *)(pa0 + (dstva - va0)), src, n);
 
-    len -= n;
-    src += n;
-    dstva = va0 + PGSIZE;
+    pte = walk(pagetable, va0, 0);
+    if (pte == 0)
+      return -1;
+    if ((*pte & PTE_V) == 0)
+      return -1;
+    if ((*pte & PTE_U) == 0)
+      return -1;
+    if ((*pte & PTE_COW) == 0) {
+      pa0 = PTE2PA(*pte);
+
+      if (pa0 == 0)
+        return -1;
+      n = PGSIZE - (dstva - va0);
+      if (n > len)
+        n = len;
+      memmove((void *)(pa0 + (dstva - va0)), src, n);
+      len -= n;
+      src += n;
+      dstva = va0 + PGSIZE;
+    } else {
+      if (uvmcreatecowpage(pagetable, va0) != 0)
+        return -1;
+    }
   }
   return 0;
 }
