@@ -255,8 +255,13 @@ fork(void)
     return -1;
   }
 
+#define COW
   // Copy user memory from parent to child.
+#ifdef COW
+  if (uvmcowcopy(p->pagetable, np->pagetable, p->sz) < 0){
+#else
   if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
+#endif
     freeproc(np);
     release(&np->lock);
     return -1;

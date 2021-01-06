@@ -5,6 +5,8 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h"
+#include "proc.h"
 
 /*
  * the kernel's page table.
@@ -75,7 +77,7 @@ kvminithart()
 //   21..39 -- 9 bits of level-1 index.
 //   12..20 -- 9 bits of level-0 index.
 //    0..12 -- 12 bits of byte offset within the page.
-static pte_t *
+pte_t *
 walk(pagetable_t pagetable, uint64 va, int alloc)
 {
   if(va >= MAXVA)
@@ -197,7 +199,7 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 size, int do_free)
       panic("uvmunmap: not a leaf");
     if(do_free){
       pa = PTE2PA(*pte);
-      kfree((void*)pa);
+      kpage_deref((void*)pa);
     }
     *pte = 0;
     if(a == last)
@@ -346,6 +348,100 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   return -1;
 }
 
+int
+uvmcowcopy(pagetable_t old, pagetable_t new, uint64 sz)
+{
+  pte_t *pte;
+  uint64 pa, i;
+  uint flags;
+
+  for(i = 0; i < sz; i += PGSIZE){
+    if((pte = walk(old, i, 0)) == 0)
+      panic("uvmcopy: pte should exist");
+    if((*pte & PTE_V) == 0)
+      panic("uvmcopy: page not present");
+
+    pa = PTE2PA(*pte);
+    flags = PTE_FLAGS(*pte);
+
+    /* Clear writable flag and set COW flag for the page table entry */
+    flags &= ~PTE_W;
+    flags |= PTE_COW;
+
+    /* Increment the refcount for physical page */
+    kpage_ref((void *)pa);
+
+    if(mappages(new, i, PGSIZE, pa, flags) != 0){
+      kpage_deref((void *)pa);
+      goto err;
+    }
+    uvmunmap(old, i, PGSIZE, 0);
+    if(mappages(old, i, PGSIZE, pa, flags) != 0)
+      panic("uvmcowcopy: Remapping old page failed");
+  }
+  return 0;
+
+ err:
+  uvmunmap(new, 0, i, 1);
+  return -1;
+}
+
+int
+uvmcowpage(pagetable_t pt, uint64 va)
+{
+  pte_t *pte;
+
+  va = PGROUNDDOWN(va);
+  pte = walk(pt, va, 0);
+  if (pte == 0 || (*pte & PTE_V) == 0){
+    /* NO PTE */
+    panic("uvmcowpage: PTE = 0");
+  }
+
+  return *pte & PTE_COW;
+}
+
+int
+uvmcreatecowpage(struct proc *p, uint64 va)
+{
+  pte_t *pte;
+  char *mem;
+  uint64 pa;
+  uint flags;
+  pagetable_t pt;
+
+  pt = p->pagetable;
+
+  va = PGROUNDDOWN(va);
+  if ((pte = walk(pt, va, 0)) == 0)
+    panic("uvmcreatecowpage: Invalid child PTE");
+
+  if ((*pte & PTE_V) == 0)
+    panic("createcowpage: PTE & PTE_V = 0");
+
+  mem = kalloc();
+  if (mem == 0) {
+    printf("uvmcreatecowpage: kalloc failed\n");
+    return -1;
+  }
+
+  pa = PTE2PA(*pte);
+  flags = PTE_FLAGS(*pte);
+
+  memmove(mem, (void *)pa, PGSIZE);
+
+  /* Clear COW flag and set writtable */
+  flags |= PTE_W;
+  flags &= ~PTE_COW;
+
+  uvmunmap(pt, va, PGSIZE, 0);
+  kpage_deref((void *)pa);
+  if (mappages(pt, va, PGSIZE, (uint64)mem, flags) != 0)
+    return -1;
+
+  return 0;
+}
+
 // mark a PTE invalid for user access.
 // used by exec for the user stack guard page.
 void
@@ -450,4 +546,34 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   } else {
     return -1;
   }
+}
+
+static void
+print_pte(pagetable_t pagetable, int level)
+{
+  if (!pagetable) return ;
+  for (int i = 0; i < 512; i++)
+  {
+    pte_t *pte = &pagetable[i];
+
+    if (pte == 0 || (*pte & PTE_V) == 0)
+      continue;
+
+    for (int i = 0; i < level; i++)
+      printf(" ..");
+
+    uint64 pa = PTE2PA(*pte);
+    printf("%d: pte %p pa %p %d\n", i, *pte, pa);
+
+    if (level != 3)
+      print_pte((pagetable_t) pa, level + 1);
+  }
+}
+
+void
+vmprint(pagetable_t pagetable)
+{
+  printf("page table %p\n", pagetable);
+
+  print_pte(pagetable, 1);
 }

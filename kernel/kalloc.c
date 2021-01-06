@@ -14,8 +14,6 @@ void freerange(void *pa_start, void *pa_end);
 extern char end[]; // first address after kernel.
                    // defined by kernel.ld.
 
-static uint64 start;
-
 struct run {
   struct run *next;
 };
@@ -98,13 +96,9 @@ kalloc(void)
 void
 kpage_ref(void *pa)
 {
-  uint index;
+  uint index = ((uint64)pa - (uint64)end) / PGSIZE;
 
   acquire(&kmem.lock);
-  if (pa == 0)
-    panic("kpage: pa is 0");
-
-  index = ((uint64)pa - (uint64)end) / PGSIZE;
   kmem.refcounts[index] ++;
   release(&kmem.lock);
 }
@@ -112,14 +106,10 @@ kpage_ref(void *pa)
 void
 kpage_deref(void *pa)
 {
-  uint index;
+  uint index = ((uint64)pa - (uint64)end) / PGSIZE;
   int free = 0;
 
   acquire(&kmem.lock);
-  if (pa == 0)
-    panic("kpage: pa is 0");
-
-  index = ((uint64)pa - (uint64)end) / PGSIZE;
   kmem.refcounts[index] --;
   if (kmem.refcounts[index] == 0)
     free = 1;
@@ -127,4 +117,20 @@ kpage_deref(void *pa)
 
   if (free)
     kfree(pa);
+}
+
+uint
+get_freepages()
+{
+  struct run *r;
+  uint count = 0;
+
+  acquire(&kmem.lock);
+  r = kmem.freelist;
+  while (r) {
+    count ++;
+    r = r->next;
+  }
+  release(&kmem.lock);
+  return count;
 }
