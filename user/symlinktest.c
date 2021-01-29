@@ -21,6 +21,7 @@ main(int argc, char *argv[])
 {
   cleanup();
   testsymlink();
+  (void) testsymlink;
   concur();
   exit(failed);
 }

@@ -330,6 +330,31 @@ sys_open(void)
     return -1;
   }
 
+  // printf("open: path=%s; no_follow=%d\n", path, !!(omode & O_NOFOLLOW));
+
+  // resolve symlink
+  if(!(omode & O_NOFOLLOW)) {
+    uint tries = 0;
+    while(ip->type == T_SYMLINK && tries < 10) {
+      readi(ip, 0, (uint64)path, 0, MAXPATH);
+      iunlockput(ip);
+
+      if((ip = namei(path)) == 0){
+        end_op(ROOTDEV);
+        return -1;
+      }
+
+      ilock(ip);
+      tries++;
+    }
+
+    if(tries >= 10) {
+      iunlockput(ip);
+      end_op(ROOTDEV);
+      return -1;
+    }
+  }
+
   if(ip->type == T_DEVICE){
     f->type = FD_DEVICE;
     f->major = ip->major;
@@ -480,6 +505,31 @@ sys_pipe(void)
     fileclose(wf);
     return -1;
   }
+  return 0;
+}
+
+uint64 sys_symlink(void) {
+  char target[MAXPATH], path[MAXPATH];
+  struct inode *ip;
+
+  if(argstr(0, target, MAXPATH) < 0 || argstr(1, path, MAXPATH) < 0)
+    return -1;
+  
+  begin_op(ROOTDEV);
+
+  // Create symlink inode
+  ip = create(path, T_SYMLINK, 0, 0);
+  if(ip == 0){
+    end_op(ROOTDEV);
+    return -1;
+  }
+
+  writei(ip, 0, (uint64)target, 0, MAXPATH);
+  iupdate(ip);
+  iunlockput(ip);
+
+  end_op(ROOTDEV);
+
   return 0;
 }
 
