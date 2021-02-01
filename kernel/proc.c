@@ -279,6 +279,14 @@ fork(void)
 
   safestrcpy(np->name, p->name, sizeof(p->name));
 
+  // Copy pages from parent to child.
+  for (int i = 0; i < NMMAP; i++) {
+    if (p->mmap[i].mapped) {
+      np->mmap[i] = p->mmap[i];
+      share_mmap_page(np, &np->mmap[i]);
+    }
+  }
+
   pid = np->pid;
 
   np->state = RUNNABLE;
@@ -331,6 +339,13 @@ exit(int status)
       struct file *f = p->ofile[fd];
       fileclose(f);
       p->ofile[fd] = 0;
+    }
+  }
+
+  for (int i = 0; i < NMMAP; i++) {
+    if (p->mmap[i].mapped) {
+      p->mmap[i].mapped = 0;
+      unshare_mmap_page(p, &p->mmap[i]);
     }
   }
 

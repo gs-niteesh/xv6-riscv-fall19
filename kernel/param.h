@@ -12,3 +12,10 @@
 #define FSSIZE       2000  // size of file system in blocks
 #define MAXPATH      128   // maximum file path name
 #define NDISK        2
+
+// mmap
+#define NMMAP      (40)
+#define MMAP_START (0x5C0000000)
+#define MMAP_SIZE  (1 * 1024 * 1024) // 1 MB
+#define MMAP_END   (MMAP_START + NMMAP * MMAP_SIZE)
+

@@ -486,12 +486,27 @@ sys_pipe(void)
 uint64
 sys_mmap(void)
 {
-  return 0;
+  uint64 addr, length;
+  int prot, flags, fd, offset;
+
+  if(argaddr(0, &addr) < 0 || argaddr(1, &length) < 0 || argint(2, &prot) < 0
+     || argint(3, &flags) < 0 || argint(4, &fd) < 0 || argint(5, &offset) < 0)
+    return -1;
+
+  if(addr != 0 || offset != 0)
+    return -1;
+
+  return vm_mmap(length, prot, flags, fd);
 }
 
 uint64
 sys_munmap(void)
 {
-  return 0;
+  uint64 addr, length;
+
+  if(argaddr(0, &addr) < 0 || argaddr(1, &length) < 0)
+    return -1;
+
+  return vm_munmap(addr, length);
 }
 

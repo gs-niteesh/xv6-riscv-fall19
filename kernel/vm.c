@@ -5,6 +5,13 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h"
+#include "sleeplock.h"
+#include "proc.h"
+#include "file.h"
+#include "fcntl.h"
+
+#define MIN(a, b) (((a) < (b)) ? (a) : (b))
 
 /*
  * the kernel's page table.
@@ -450,4 +457,180 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   } else {
     return -1;
   }
+}
+
+struct mmap_info *
+vm_map_alloc(struct proc *p)
+{
+  for(int i = 0; i < NMMAP; i++) {
+    if(p->mmap[i].mapped == 0) {
+      p->mmap[i].va_start = MMAP_START + (i * MMAP_SIZE);
+      return &p->mmap[i];
+    }
+  }
+
+  return 0;
+}
+
+uint64
+vm_mmap(uint64 length, int prot, int flags, int fd)
+{
+  struct proc *p;
+  struct file *fp;
+  struct mmap_info *map;
+
+  p = myproc();
+
+  if((fp = p->ofile[fd]) == 0 || fp->type != FD_INODE)
+    return -1;
+
+  if((flags & MAP_SHARED) && (prot & PROT_WRITE) && !fp->writable)
+    return -1;
+
+  if((map = vm_map_alloc(p)) == 0)
+    return -1;
+
+  map->va_end = PGROUNDUP(map->va_start + length);
+  map->length = length;
+  map->mapped = 1;
+  map->flags  = flags;
+  map->prot   = prot;
+  map->fp     = filedup(fp);
+
+  return map->va_start;
+}
+
+int
+vm_munmap(uint64 addr, uint64 length)
+{
+  struct proc *p;
+  struct file *fp;
+  struct mmap_info *map;
+  pagetable_t pagetable;
+  pte_t *pte;
+  uint64 baddr, pa, len;
+  uint   index;
+
+  p = myproc();
+  pagetable = p->pagetable;
+  baddr = PGROUNDDOWN(addr);
+  index = (baddr - MMAP_START) / MMAP_SIZE;
+  map = &p->mmap[index];
+
+  fp = map->fp;
+
+  for(uint64 va=baddr; va<addr + length; va+=PGSIZE) {
+    if((pte = walk(pagetable, va, 0)) && (*pte & PTE_V)) {
+      pa = PTE2PA(*pte);
+
+      if((map->flags & MAP_SHARED)) {
+        len = MIN(PGSIZE, map->length - (va - baddr));
+
+        begin_op(fp->ip->dev);
+        ilock(fp->ip);
+        writei(fp->ip, 0, pa, va - baddr, len);
+        iunlock(fp->ip);
+        end_op(fp->ip->dev);
+      }
+      uvmunmap(pagetable, va, PGSIZE, 0);
+      kpage_deref((void*)pa);
+    }
+  }
+
+  if(addr == map->va_start && map->length == length) {
+    fileclose(map->fp);
+    map->mapped = 0;
+  } else {
+    if(addr == map->va_start)
+      map->va_start = addr + length;
+    else if(addr + length == map->va_end)
+      map->va_end = addr;
+  }
+
+  return 0;
+}
+
+void
+share_mmap_page(struct proc *p, struct mmap_info *map)
+{
+  pagetable_t pagetable;
+  uint64 pa;
+  pte_t *pte;
+
+  pagetable = p->pagetable;
+
+  for(uint64 va=map->va_start; va<map->va_end; va+=PGSIZE) {
+    if((pte = walk(pagetable, va, 0)) && (*pte & PTE_V)) {
+      pa = PTE2PA(*pte);
+      kpage_ref((void *)pa);
+    }
+  }
+
+}
+
+void
+unshare_mmap_page(struct proc *p, struct mmap_info *map)
+{
+  pagetable_t pagetable;
+  uint64 pa;
+  pte_t *pte;
+
+  pagetable = p->pagetable;
+
+  for(uint64 va=map->va_start; va<map->va_end; va+=PGSIZE) {
+    if((pte = walk(pagetable, va, 0)) && (*pte & PTE_V)) {
+      pa = PTE2PA(*pte);
+      uvmunmap(pagetable, va, PGSIZE, 0);
+      kpage_deref((void *)pa);
+    }
+  }
+}
+
+int
+handle_mmap_page_fault(struct proc *p, uint64 addr)
+{
+  struct mmap_info *map;
+  pagetable_t pagetable;
+  struct file *fp;
+  uint64 baddr, fstart, len;
+  uint index;
+  char *page;
+  int perms;
+
+  pagetable = p->pagetable;
+  baddr = PGROUNDDOWN(addr);
+  index = (baddr - MMAP_START) / MMAP_SIZE;
+  map = &p->mmap[index];
+
+  if(map->mapped == 0 || map->va_end <= addr) {
+    printf("invalid addr\n");
+    return -1;
+  }
+
+  fp = map->fp;
+  fstart = addr - map->va_start;
+  len = MIN(PGSIZE, (map->length - fstart));
+
+  if((page = (char *)kalloc()) == 0) {
+    printf("kalloc failed\n");
+    return -1;
+  }
+
+  perms = 0;
+  perms |= (map->prot & PROT_READ) ? PTE_R : 0;
+  perms |= (map->prot & PROT_WRITE) ? PTE_W : 0;
+  perms |= PTE_U;
+
+  memset(page, 0, PGSIZE);
+  ilock(fp->ip);
+  readi(fp->ip, 0, (uint64)page, fstart, len);
+  iunlock(fp->ip);
+
+  if(mappages(pagetable, baddr, PGSIZE, (uint64)page, perms) != 0){
+    kfree(page);
+    printf("mappages failed\n");
+    return -1;
+  }
+
+  return 0;
 }

@@ -8,6 +8,7 @@ struct spinlock;
 struct sleeplock;
 struct stat;
 struct superblock;
+struct mmap_info;
 
 // bio.c
 void            binit(void);
@@ -173,6 +174,11 @@ uint64          walkaddr(pagetable_t, uint64);
 int             copyout(pagetable_t, uint64, char *, uint64);
 int             copyin(pagetable_t, char *, uint64, uint64);
 int             copyinstr(pagetable_t, char *, uint64, uint64);
+uint64          vm_mmap(uint64, int, int, int);
+int             vm_munmap(uint64, uint64);
+void            share_mmap_page(struct proc *, struct mmap_info *);
+void            unshare_mmap_page(struct proc *, struct mmap_info *);
+struct mmap_info*    vm_map_alloc(struct proc *);
 
 // plic.c
 void            plicinit(void);

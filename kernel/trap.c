@@ -15,6 +15,7 @@ extern char trampoline[], uservec[], userret[];
 void kernelvec();
 
 extern int devintr();
+extern int handle_mmap_page_fault(struct proc *, uint64);
 
 static const char *
 scause_desc(uint64 stval);
@@ -70,6 +71,24 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
+  } else if(r_scause() == 13 || r_scause() == 15){
+    uint64 fault_addr, addr;
+
+    fault_addr = r_stval();
+
+    addr = PGROUNDDOWN(fault_addr);
+    if(addr >= MMAP_START && addr < MMAP_END) {
+      // handle mmap page fault
+      if(handle_mmap_page_fault(p, fault_addr) == -1) {
+        printf("handle_mmap_page_fault: failed\n");
+        p->killed = 1;
+      }
+    } else {
+      // normal page fault
+      printf("usertrap(): unexpected scause %p (%s) pid=%d\n", r_scause(), scause_desc(r_scause()), p->pid);
+      printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
+      p->killed = 1;
+    }
   } else {
     printf("usertrap(): unexpected scause %p (%s) pid=%d\n", r_scause(), scause_desc(r_scause()), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
